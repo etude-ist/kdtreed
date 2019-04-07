@@ -1,0 +1,4 @@
+# The kD-tree daemon configuration.
+
+host = "localhost"
+port = "8001"
