@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Data struct {
@@ -30,6 +31,11 @@ type Expr struct {
 	point    []float64
 	data     Data
 	valid    bool
+}
+
+type KdtreeStore struct {
+	sync.Mutex
+	tree *kdtree.KDTree
 }
 
 func (expr *Expr) Current() string {
@@ -163,32 +169,38 @@ func MakePoint(p string) []float64 {
 	return []float64{float64(x), float64(y)}
 }
 
-func HandleRequest(connection net.Conn, tree *kdtree.KDTree) {
+func HandleRequest(connection net.Conn, store *KdtreeStore) {
 	connection.Write([]byte("Connected to kdtreed...\r\n"))
 	for {
 		data, err := bufio.NewReader(connection).ReadString('\n')
 		if err != nil {
-			log.Fatal(err)
-			return
+			connection.Write([]byte("READ ERROR\r\n"))
+			continue
 		}
 
 		parsed := ParseKDtreeCommand(data)
 		if !parsed.valid {
-			break
+			connection.Write([]byte("INVALID COMMAND\r\n"))
+			continue
 		}
 		if parsed.valid && parsed.action == "END" {
+			connection.Write([]byte("BYE!!!\r\n"))
 			break
 		}
 
 		switch parsed.action {
 		case "ADD":
-			tree.Insert(points.NewPoint(parsed.point, parsed.data))
+			store.Lock()
+			store.tree.Insert(points.NewPoint(parsed.point, parsed.data))
+			store.Unlock()
 			connection.Write([]byte(fmt.Sprintf("%+v added\r\n", parsed.point)))
 		case "DEL":
-			tree.Remove(&points.Point{Coordinates: parsed.point})
+			store.Lock()
+			store.tree.Remove(&points.Point{Coordinates: parsed.point})
+			store.Unlock()
 			connection.Write([]byte(fmt.Sprintf("%+v deleted\r\n", parsed.point)))
 		case "KNN":
-			rst := tree.KNN(&points.Point{Coordinates: parsed.point}, parsed.data.value)
+			rst := store.tree.KNN(&points.Point{Coordinates: parsed.point}, parsed.data.value)
 			connection.Write([]byte(fmt.Sprintf("%+v\r\n", rst)))
 		}
 
@@ -209,14 +221,15 @@ func main() {
 	defer listener.Close()
 	fmt.Println("Started kdtreed on HOST:", config.Host, "PORT:", config.Port)
 
-	tree := kdtree.New([]kdtree.Point{})
+	var store KdtreeStore
+	store.tree = kdtree.New([]kdtree.Point{})
 
 	for {
 		request, err := listener.Accept()
 		if err != nil {
-			log.Fatal(err)
-			return
+			log.Println(err)
+			continue
 		}
-		go HandleRequest(request, tree)
+		go HandleRequest(request, &store)
 	}
 }
